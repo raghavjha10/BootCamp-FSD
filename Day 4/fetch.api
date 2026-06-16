@@ -1,0 +1,298 @@
+/* =============================================
+   SkyPulse Weather App — app.js
+   =============================================
+   HOW TO USE:
+   1. Get a free API key at 
+   2. Replace 'YOUR_API_KEY_HERE' below with your key
+   ============================================= */
+
+const API_KEY = 'YOUR_API_KEY_HERE';
+const BASE_URL = 'https://api.openweathermap.org/data/2.5/weather';
+
+let isCelsius = true;
+let currentData = null;
+
+// ── DOM refs ──────────────────────────────────────
+const cityInput    = document.getElementById('cityInput');
+const weatherCard  = document.getElementById('weatherCard');
+const loader       = document.getElementById('loader');
+const errorMsg     = document.getElementById('errorMsg');
+const skyBg        = document.getElementById('skyBg');
+
+// ── Init: generate stars ─────────────────────────
+(function generateStars() {
+  const container = document.getElementById('stars');
+  for (let i = 0; i < 80; i++) {
+    const s = document.createElement('div');
+    s.className = 'star';
+    const size = Math.random() * 2 + 0.5;
+    s.style.cssText = `
+      width:${size}px; height:${size}px;
+      top:${Math.random()*100}%;
+      left:${Math.random()*100}%;
+      --d:${(Math.random()*3+2).toFixed(1)}s;
+      animation-delay:${(Math.random()*4).toFixed(1)}s;
+    `;
+    container.appendChild(s);
+  }
+})();
+
+// ── Enter key support ─────────────────────────────
+cityInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') fetchWeather();
+});
+
+// ── Main fetch function ───────────────────────────
+async function fetchWeather() {
+  const city = cityInput.value.trim();
+  if (!city) {
+    showError('Please enter a city name.');
+    shakeInput();
+    return;
+  }
+  if (API_KEY === 'YOUR_API_KEY_HERE') {
+    showError('Add your OpenWeatherMap API key in app.js to get live data.');
+    showDemoData(city);
+    return;
+  }
+
+  clearError();
+  showLoader(true);
+  hideCard();
+
+  try {
+    const url = `${BASE_URL}?q=${encodeURIComponent(city)}&appid=${API_KEY}&units=metric`;
+    const res  = await fetch(url);
+    if (!res.ok) throw new Error(res.status === 404 ? 'City not found. Check spelling.' : 'API error — try again.');
+    const data = await res.json();
+    currentData = data;
+    isCelsius = true;
+    renderWeather(data);
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    showLoader(false);
+  }
+}
+
+// ── Render ────────────────────────────────────────
+function renderWeather(data) {
+  const { name, sys, weather, main, wind, visibility, clouds } = data;
+  const desc  = weather[0].description;
+  const icon  = getWeatherEmoji(weather[0].id, weather[0].icon);
+  const now   = new Date();
+  const dateStr = now.toLocaleDateString('en-US', { weekday:'long', month:'short', day:'numeric' });
+
+  // Set text
+  setText('cityName',       `${name}`);
+  setText('countryDate',    `${sys.country} · ${dateStr}`);
+  setText('weatherIconBig', icon);
+  setText('conditionLabel', desc);
+  setText('tempValue',      Math.round(main.temp));
+  setText('tempUnit',       '°C');
+  setText('feelsLike',      `${Math.round(main.feels_like)}°C`);
+  setText('tempRange',      `↑${Math.round(main.temp_max)}° ↓${Math.round(main.temp_min)}°`);
+  setText('humidity',       `${main.humidity}%`);
+  setText('windSpeed',      `${Math.round(wind.speed * 3.6)} km/h`);
+  setText('visibility',     visibility ? `${(visibility/1000).toFixed(1)} km` : 'N/A');
+  setText('pressure',       `${main.pressure} hPa`);
+  setText('cloudiness',     `${clouds.all}%`);
+  setText('windDir',        degToCompass(wind.deg || 0));
+  setText('gusts',          wind.gust ? `${Math.round(wind.gust * 3.6)} km/h` : 'N/A');
+
+  // Sunrise / Sunset
+  setText('sunrise', formatTime(sys.sunrise, data.timezone));
+  setText('sunset',  formatTime(sys.sunset,  data.timezone));
+
+  // UV bar — simulated from cloud cover (real UV needs One Call API)
+  const uvEst = Math.round((1 - clouds.all / 100) * 10);
+  setText('uvVal', `~${uvEst}`);
+  setTimeout(() => {
+    document.getElementById('uvBar').style.width = `${uvEst * 10}%`;
+  }, 200);
+
+  // Sky background
+  setSkyMood(weather[0].id, weather[0].icon);
+
+  // Show card
+  weatherCard.classList.add('visible');
+  weatherCard.style.display = 'flex';
+}
+
+// ── Unit toggle ───────────────────────────────────
+function toggleUnit() {
+  if (!currentData) return;
+  isCelsius = !isCelsius;
+  const temp     = currentData.main.temp;
+  const feels    = currentData.main.feels_like;
+  const tmin     = currentData.main.temp_min;
+  const tmax     = currentData.main.temp_max;
+
+  if (isCelsius) {
+    setText('tempValue',  Math.round(temp));
+    setText('tempUnit',   '°C');
+    setText('feelsLike',  `${Math.round(feels)}°C`);
+    setText('tempRange',  `↑${Math.round(tmax)}° ↓${Math.round(tmin)}°`);
+    document.getElementById('unitToggle').textContent = 'Switch to °F';
+  } else {
+    const toF = c => Math.round(c * 9/5 + 32);
+    setText('tempValue',  toF(temp));
+    setText('tempUnit',   '°F');
+    setText('feelsLike',  `${toF(feels)}°F`);
+    setText('tempRange',  `↑${toF(tmax)}° ↓${toF(tmin)}°`);
+    document.getElementById('unitToggle').textContent = 'Switch to °C';
+  }
+}
+
+// ── Sky mood ──────────────────────────────────────
+function setSkyMood(condId, icon) {
+  skyBg.className = 'sky-bg';
+  clearClouds();
+  clearRain();
+
+  if (condId >= 200 && condId < 600) {
+    // Rain / Storm / Drizzle
+    skyBg.classList.add('rainy');
+    spawnRain(condId < 300 ? 120 : 70);
+    spawnClouds(5, true);
+  } else if (condId >= 600 && condId < 700) {
+    // Snow
+    skyBg.classList.add('cloudy');
+    spawnClouds(4, true);
+  } else if (condId >= 800 && condId < 803) {
+    // Clear / few clouds
+    skyBg.classList.add('sunny');
+    spawnClouds(condId === 800 ? 1 : 2, false);
+  } else {
+    // Broken / overcast clouds
+    skyBg.classList.add('cloudy');
+    spawnClouds(5, false);
+  }
+}
+
+function spawnClouds(count, dark) {
+  const container = document.getElementById('clouds');
+  for (let i = 0; i < count; i++) {
+    const c = document.createElement('div');
+    c.className = 'cloud-shape';
+    const w = Math.random()*200+120;
+    const h = w * 0.4;
+    c.style.cssText = `
+      width:${w}px; height:${h}px;
+      top:${Math.random()*40}%;
+      left:${Math.random()*80}%;
+      background: rgba(255,255,255,${dark ? 0.03 : 0.06});
+      animation-duration:${Math.random()*60+40}s;
+      animation-delay:-${Math.random()*40}s;
+    `;
+    container.appendChild(c);
+  }
+}
+
+function spawnRain(drops) {
+  const container = document.getElementById('rainContainer');
+  for (let i = 0; i < drops; i++) {
+    const d = document.createElement('div');
+    d.className = 'rain-drop';
+    const h = Math.random()*60+20;
+    d.style.cssText = `
+      left:${Math.random()*100}%;
+      height:${h}px;
+      animation-duration:${(Math.random()*0.5+0.4).toFixed(2)}s;
+      animation-delay:-${(Math.random()*1.5).toFixed(2)}s;
+      opacity:${Math.random()*0.5+0.3};
+    `;
+    container.appendChild(d);
+  }
+}
+
+function clearClouds() { document.getElementById('clouds').innerHTML = ''; }
+function clearRain()   { document.getElementById('rainContainer').innerHTML = ''; }
+
+// ── Helpers ───────────────────────────────────────
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+function showLoader(on) {
+  loader.classList.toggle('active', on);
+}
+
+function hideCard() {
+  weatherCard.classList.remove('visible');
+  weatherCard.style.display = 'none';
+}
+
+function showError(msg) {
+  errorMsg.textContent = msg;
+}
+
+function clearError() {
+  errorMsg.textContent = '';
+}
+
+function shakeInput() {
+  const box = document.getElementById('searchBox');
+  box.style.animation = 'none';
+  box.offsetHeight; // reflow
+  box.style.animation = 'shake 0.4s ease';
+}
+
+// Add shake keyframe dynamically
+const style = document.createElement('style');
+style.textContent = `@keyframes shake {
+  0%,100%{transform:translateX(0)}
+  20%{transform:translateX(-8px)}
+  40%{transform:translateX(8px)}
+  60%{transform:translateX(-5px)}
+  80%{transform:translateX(5px)}
+}`;
+document.head.appendChild(style);
+
+function formatTime(unix, tzOffset) {
+  const d = new Date((unix + tzOffset) * 1000);
+  const h = d.getUTCHours(), m = d.getUTCMinutes();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  return `${(h % 12 || 12)}:${String(m).padStart(2,'0')} ${ampm}`;
+}
+
+function degToCompass(deg) {
+  const dirs = ['N','NE','E','SE','S','SW','W','NW'];
+  return dirs[Math.round(deg / 45) % 8];
+}
+
+function getWeatherEmoji(id, icon) {
+  const night = icon && icon.endsWith('n');
+  if (id >= 200 && id < 300) return '⛈';
+  if (id >= 300 && id < 400) return '🌦';
+  if (id >= 500 && id < 510) return '🌧';
+  if (id >= 510 && id < 600) return '🌨';
+  if (id >= 600 && id < 700) return '❄️';
+  if (id >= 700 && id < 800) return '🌫';
+  if (id === 800) return night ? '🌙' : '☀️';
+  if (id === 801) return night ? '🌤' : '🌤';
+  if (id === 802) return '⛅';
+  if (id >= 803) return '☁️';
+  return '🌡';
+}
+
+// ── Demo data (shown when no API key) ─────────────
+function showDemoData(city) {
+  currentData = {
+    name: city || 'Demo City',
+    sys: { country: 'XX', sunrise: Math.floor(Date.now()/1000) - 21600, sunset: Math.floor(Date.now()/1000) + 21600 },
+    weather: [{ id: 800, description: 'clear sky', icon: '01d' }],
+    main: { temp: 28, feels_like: 31, temp_min: 22, temp_max: 33, humidity: 58, pressure: 1012 },
+    wind: { speed: 4.2, deg: 220, gust: 6.5 },
+    visibility: 10000,
+    clouds: { all: 8 },
+    timezone: 0,
+  };
+  renderWeather(currentData);
+  showLoader(false);
+}
+
+// Init sky
+skyBg.classList.add('default');
+spawnClouds(2, false);
